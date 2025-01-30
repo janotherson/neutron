@@ -442,6 +442,39 @@ class TestDBInconsistenciesPeriodics(testlib_api.SqlTestCaseLight,
         self.periodic._log_maintenance_inconsistencies(incst, [])
         self.assertFalse(mock_log.called)
 
+    def test_update_lrouter_ports_ext_ids_name_prefix(self):
+        lrp1_no_prefix = {
+                '_uuid': 'port-id1',
+                'name': 'lrp-id1',
+                'external_ids': {
+                    constants.OVN_ROUTER_NAME_EXT_ID_KEY: 'rtr-id1'}}
+        lrp2_with_prefix = {
+                '_uuid': 'port-id2',
+                'name': 'lrp-id2',
+                'external_ids': {
+                    constants.OVN_ROUTER_NAME_EXT_ID_KEY:
+                    '%srtr-id2' % constants.OVN_NAME_PREFIX}}
+
+        nb_idl = self.fake_ovn_client._nb_idl
+        nb_idl.db_find.return_value.execute.return_value = [
+            lrp1_no_prefix,
+            lrp2_with_prefix]
+
+        with mock.patch.object(maintenance.LOG, 'warning') as mock_warning:
+            self.assertRaises(
+                periodics.NeverAgain,
+                self.periodic.update_lrouter_ports_ext_ids_name_prefix)
+
+        # The prefix rewrite is disabled by x5 (bare NB data model): only
+        # prefixed LRPs are reported, no writes are performed.
+        mock_warning.assert_called_once()
+        self.assertIn('NOT rewriting (disabled by x5)',
+                      mock_warning.call_args[0][0])
+        self.assertEqual(1, mock_warning.call_args[0][1])
+        self.assertEqual(['lrp-id2'], mock_warning.call_args[0][2])
+        nb_idl.db_set.assert_not_called()
+        nb_idl.transaction.assert_not_called()
+
     def test_check_for_igmp_snoop_support(self):
         cfg.CONF.set_override('igmp_snooping_enable', True, group='OVS')
         nb_idl = self.fake_ovn_client._nb_idl

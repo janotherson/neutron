@@ -545,6 +545,44 @@ class DBInconsistenciesPeriodics(SchemaAwarePeriodicsBase):
         periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
         spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
         run_immediately=True)
+    def update_lrouter_ports_ext_ids_name_prefix(self):
+        """Detect prefixed "neutron:router_name" LRPs; telemetry only.
+
+        The "neutron-" prefix rewrite is intentionally disabled by x5 to
+        keep the NB data model at bare semantics (old-neutron rollback
+        compatibility): the consumer half of upstream 2996f9ff53 was never
+        backported, so prefixed values would break name lookups.
+        """
+        LOG.debug(
+            'Maintenance task: Check prefixed router_name in '
+            'external_ids of LRPs.')
+
+        lrp_key = ('external_ids', '!=',
+                   {ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY: ''})
+        prefixed_lrps = [
+            lrp for lrp in self._nb_idl.db_find(
+                'Logical_Router_Port', lrp_key).execute(check_error=True)
+            if lrp['external_ids'].get(
+                ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY, '').startswith(
+                ovn_const.OVN_NAME_PREFIX)]
+
+        if prefixed_lrps:
+            LOG.warning(
+                'Maintenance task: %d LRPs have a prefixed '
+                '"neutron:router_name" external_ids value '
+                '(e.g. %s); prefixed neutron:router_name detected; '
+                'data normalization required; NOT rewriting (disabled by x5)',
+                len(prefixed_lrps),
+                [lrp['name'] for lrp in prefixed_lrps[:5]])
+
+        raise periodics.NeverAgain()
+
+    # A static spacing value is used here, but this method will only run
+    # once per lock due to the use of periodics.NeverAgain().
+    @has_lock_periodic(
+        periodic_run_limit=ovn_const.MAINTENANCE_TASK_RETRY_LIMIT,
+        spacing=ovn_const.MAINTENANCE_ONE_RUN_TASK_SPACING,
+        run_immediately=True)
     @log_maintenance_task(
         start_message='Check global DHCP options consistency.')
     def check_global_dhcp_opts(self):
