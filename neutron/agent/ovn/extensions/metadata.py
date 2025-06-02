@@ -15,6 +15,7 @@
 import collections
 import functools
 import re
+import threading
 
 from oslo_concurrency import lockutils
 from oslo_config import cfg
@@ -153,7 +154,16 @@ class MetadataExtension(extension_manager.OVNAgentExtension,
         Reload the configuration and sync the agent again.
         """
         self.agent_api.load_config()
+        self._update_chassis_private_config()
         self.sync()
+
+    def _update_chassis_private_config(self):
+        # Set OVN bridge config on Chassis_Private
+        external_ids = {ovn_const.OVN_AGENT_OVN_BRIDGE:
+                        self.agent_api.ovn_bridge}
+        self.agent_api.sb_idl.db_set(
+            'Chassis_Private', self.agent_api.chassis,
+            ('external_ids', external_ids)).execute(check_error=True)
 
     def start(self):
         self._load_config()
@@ -169,6 +179,11 @@ class MetadataExtension(extension_manager.OVNAgentExtension,
 
         # Register the agent with its corresponding Chassis
         self.register_metadata_agent()
+        self._update_chassis_private_config()
+
+        # Start the metadata server.
+        proxy_thread = threading.Thread(target=self._proxy.wait)
+        proxy_thread.start()
 
         # Raise the "is_started" flag.
         self._is_started = True
