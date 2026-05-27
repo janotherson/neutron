@@ -1,0 +1,20 @@
+---
+fixes:
+  - |
+    The ``create_port:allowed_address_pairs``,
+    ``create_port:allowed_address_pairs:mac_address``,
+    ``create_port:allowed_address_pairs:ip_address``,
+    ``update_port:allowed_address_pairs``,
+    ``update_port:allowed_address_pairs:mac_address`` and
+    ``update_port:allowed_address_pairs:ip_address`` default policy rules
+    now also authorize the ``SERVICE`` role
+    (``ADMIN_OR_NET_OWNER_MEMBER or SERVICE``), matching the rules on
+    master. Previously these rules were ``ADMIN_OR_NET_OWNER_MEMBER``
+    only, which denied service users (e.g. Neutron services managing
+    ports with allowed address pairs on networks they do not own).
+    The unit tests for the port attribute rules (``device_owner``,
+    ``mac_address``, ``fixed_ips``, ``port_security_enabled`` and
+    ``allowed_address_pairs``) were hardened to explicitly assert the
+    network ownership requirements already enforced by the 2024.1 default
+    policies (a project member or reader that does not own the network is
+    denied; the network owner, admin and service roles are allowed).
