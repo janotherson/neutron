@@ -2108,7 +2108,6 @@ class OVNClient:
             addresses=[ovn_const.UNKNOWN_ADDR],
             external_ids={},
             type=ovn_const.LSP_TYPE_LOCALNET,
-            tag=tag,
             tag_request=tag,
             options=options)
         self._transaction([cmd], txn=txn)
@@ -2324,7 +2323,8 @@ class OVNClient:
                 tag = [] if tag is None else tag
                 lport_name = utils.ovn_provnet_port_name(segment['id'])
                 txn.add(self._nb_idl.set_lswitch_port(lport_name=lport_name,
-                                                      tag=tag, if_exists=True))
+                                                      tag_request=tag,
+                                                      if_exists=True))
 
             self._qos_driver.update_network(txn, network, original_network)
 
