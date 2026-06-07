@@ -2109,6 +2109,7 @@ class OVNClient:
             external_ids={},
             type=ovn_const.LSP_TYPE_LOCALNET,
             tag=tag,
+            tag_request=tag,
             options=options)
         self._transaction([cmd], txn=txn)
 
