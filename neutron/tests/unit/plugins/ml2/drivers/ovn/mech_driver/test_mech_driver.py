@@ -908,6 +908,7 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
                     ovs_conf.get_igmp_flood(),
                 ovn_const.LSP_OPTIONS_LOCALNET_LEARN_FDB: 'false'},
             tag=2,
+            tag_request=2,
             type='localnet')
 
     def test_create_port_without_security_groups(self):
@@ -3372,6 +3373,7 @@ class TestOVNMechanismDriverSegment(MechDriverSetupBase,
                     ovs_conf.get_igmp_flood(),
                 ovn_const.LSP_OPTIONS_LOCALNET_LEARN_FDB: 'false'},
             tag=200,
+            tag_request=200,
             type='localnet')
         ovn_nb_api.create_lswitch_port.reset_mock()
         new_segment = self._test_create_segment(
@@ -3390,6 +3392,7 @@ class TestOVNMechanismDriverSegment(MechDriverSetupBase,
                     ovs_conf.get_igmp_flood(),
                 ovn_const.LSP_OPTIONS_LOCALNET_LEARN_FDB: 'false'},
             tag=300,
+            tag_request=300,
             type='localnet')
         segments = segments_db.get_network_segments(
             self.context, net['id'])
