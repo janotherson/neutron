@@ -115,13 +115,23 @@ class CheckLivenessCommand(command.BaseCommand):
         self.result = self.api.nb_global.nb_cfg
 
 
+def _tag_column_to_tag_request(columns):
+    # Setting tag directly is verboten, if it is set convert it to a
+    # tag_request if there isn't one, otherwise ignore it
+    tag = columns.pop('tag', None)
+    if tag is not None and 'tag_request' not in columns:
+        LOG.debug("Converting tag %s to a tag_request", tag)
+        columns['tag_request'] = tag
+    return columns
+
+
 class AddLSwitchPortCommand(command.BaseCommand):
     def __init__(self, api, lport, lswitch, may_exist, **columns):
         super(AddLSwitchPortCommand, self).__init__(api)
         self.lport = lport
         self.lswitch = lswitch
         self.may_exist = may_exist
-        self.columns = columns
+        self.columns = _tag_column_to_tag_request(columns)
 
     def run_idl(self, txn):
         try:
@@ -140,7 +150,6 @@ class AddLSwitchPortCommand(command.BaseCommand):
 
         port = txn.insert(self.api._tables['Logical_Switch_Port'])
         port.name = self.lport
-        port.tag = self.columns.pop('tag', []) or []
         dhcpv4_options = self.columns.pop('dhcpv4_options', [])
         if isinstance(dhcpv4_options, list):
             port.dhcpv4_options = dhcpv4_options
@@ -174,7 +183,7 @@ class SetLSwitchPortCommand(command.BaseCommand):
         super(SetLSwitchPortCommand, self).__init__(api)
         self.lport = lport
         self.external_ids_update = external_ids_update
-        self.columns = columns
+        self.columns = _tag_column_to_tag_request(columns)
         self.if_exists = if_exists
 
     def run_idl(self, txn):
