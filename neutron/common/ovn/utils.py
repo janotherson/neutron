@@ -1072,14 +1072,44 @@ def sync_ha_chassis_group(context, port_id, network_id, nb_idl, sb_idl, txn):
     and then return) the appropriate HA Chassis Group the external
     port (in that network) needs to be associated with.
 
+    When a caller provided transaction is given, the operation is executed
+    within that transaction, atomically, without any retry. When no
+    transaction is provided, the operation runs in its own independent
+    (non nested) OVSDB transaction and is retried on OVSDB constraint
+    violations (RuntimeError), giving the IDL cache time to catch up
+    between attempts (upstream 70394b3df6).
+
     :param context: Neutron API context
     :param port_id: The port ID
     :param network_id: The network ID
     :param nb_idl: OVN NB IDL
     :param sb_idl: OVN SB IDL
-    :param txn: The ovsdbapp transaction object
+    :param txn: The ovsdbapp transaction object (optional)
     :returns: The HA Chassis Group UUID or the HA Chassis Group command object
     """
+    if txn is not None:
+        return _sync_ha_chassis_group(
+            context, port_id, network_id, nb_idl, sb_idl, txn)
+
+    @tenacity.retry(
+        retry=tenacity.retry_if_exception_type(RuntimeError),
+        wait=tenacity.wait_random(min=0.5, max=2),
+        stop=tenacity.stop_after_attempt(3),
+        reraise=True)
+    def _sync_with_retry():
+        # NOTE: The method using this wrapper can be called inside an IDL
+        # transaction context, but this new transaction won't be nested
+        # inside the other one but executed independently. A nested
+        # transaction would be merged with the caller's port transaction,
+        # making the HA Chassis Group creation impossible to retry
+        # independently on constraint violations.
+        with nb_idl.transaction(check_error=True, nested=False) as new_txn:
+            return _sync_ha_chassis_group(
+                context, port_id, network_id, nb_idl, sb_idl, new_txn)
+    return _sync_with_retry()
+
+
+def _sync_ha_chassis_group(context, port_id, network_id, nb_idl, sb_idl, txn):
     # If there are Chassis marked for hosting external ports create a HA
     # Chassis Group per external port, otherwise do it at the network level
     hcg_info = _get_info_for_ha_chassis_group(context, port_id, network_id,

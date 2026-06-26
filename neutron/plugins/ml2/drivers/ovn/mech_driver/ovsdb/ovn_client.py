@@ -624,7 +624,7 @@ class OVNClient(object):
                     port_info.type == ovn_const.LSP_TYPE_EXTERNAL):
                 kwargs['ha_chassis_group'] = utils.sync_ha_chassis_group(
                     context, port['id'], port['network_id'], self._nb_idl,
-                    self._sb_idl, txn)
+                    self._sb_idl, None)
 
             # NOTE(mjozefcz): Do not set addresses if the port is not
             # bound, has no device_owner and it is OVN LB VIP port.
@@ -750,7 +750,7 @@ class OVNClient(object):
                     columns_dict['ha_chassis_group'] = (
                         utils.sync_ha_chassis_group(
                             context, port['id'], port['network_id'],
-                            self._nb_idl, self._sb_idl, txn))
+                            self._nb_idl, self._sb_idl, None))
                 else:
                     # Clear the ha_chassis_group field
                     columns_dict['ha_chassis_group'] = []

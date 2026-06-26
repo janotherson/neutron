@@ -2868,21 +2868,29 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
     @mock.patch.object(ovn_utils, '_get_info_for_ha_chassis_group')
     def test_sync_ha_chassis_group(self, mock_hcg_info):
         self.nb_ovn.ha_chassis_group_get.side_effect = idlutils.RowNotFound
-        fake_txn = mock.Mock()
 
         hcg_info = self._build_hcg_info()
         mock_hcg_info.return_value = hcg_info
 
-        # Invoke the method
+        # Invoke the method with no transaction provided: the HA Chassis
+        # Group is created in an independent, non nested transaction that
+        # can be retried on its own
         ovn_utils.sync_ha_chassis_group(
             self.context, 'fake-port-id', 'fake-net-id',
-            self.nb_ovn, self.sb_ovn, fake_txn)
+            self.nb_ovn, self.sb_ovn, None)
 
+        self.nb_ovn.transaction.assert_called_once_with(
+            check_error=True, nested=False)
+        new_txn = self.nb_ovn.transaction.return_value.__enter__.return_value
         # Assert it creates the HA Chassis Group
         ext_ids = {ovn_const.OVN_AZ_HINTS_EXT_ID_KEY:
                    ','.join(hcg_info.az_hints)}
         self.nb_ovn.ha_chassis_group_add.assert_called_once_with(
             hcg_info.group_name, may_exist=True, external_ids=ext_ids)
+        self.assertEqual(
+            5, new_txn.add.call_count,
+            'HA Chassis Group creation and chassis commands must be added '
+            'to the independent transaction')
 
         expected_calls = [
             mock.call(hcg_info.group_name, 'ch0', priority=mock.ANY),
@@ -2893,8 +2901,32 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
             expected_calls, any_order=True)
 
     @mock.patch.object(ovn_utils, '_get_info_for_ha_chassis_group')
-    def test_sync_ha_chassis_group_existing_group(self, mock_hcg_info):
+    def test_sync_ha_chassis_group_with_txn(self, mock_hcg_info):
+        self.nb_ovn.ha_chassis_group_get.side_effect = idlutils.RowNotFound
+
+        hcg_info = self._build_hcg_info()
+        mock_hcg_info.return_value = hcg_info
+
+        # Invoke the method providing a caller transaction: the operation
+        # is executed nested in that transaction, atomically, without
+        # opening any independent transaction and without retry
         fake_txn = mock.Mock()
+        ovn_utils.sync_ha_chassis_group(
+            self.context, 'fake-port-id', 'fake-net-id',
+            self.nb_ovn, self.sb_ovn, fake_txn)
+
+        self.nb_ovn.transaction.assert_not_called()
+        ext_ids = {ovn_const.OVN_AZ_HINTS_EXT_ID_KEY:
+                   ','.join(hcg_info.az_hints)}
+        self.nb_ovn.ha_chassis_group_add.assert_called_once_with(
+            hcg_info.group_name, may_exist=True, external_ids=ext_ids)
+        self.assertEqual(
+            5, fake_txn.add.call_count,
+            'HA Chassis Group creation and chassis commands must be added '
+            'to the caller provided transaction')
+
+    @mock.patch.object(ovn_utils, '_get_info_for_ha_chassis_group')
+    def test_sync_ha_chassis_group_existing_group(self, mock_hcg_info):
         hcg_info = self._build_hcg_info()
         mock_hcg_info.return_value = hcg_info
 
@@ -2920,7 +2952,7 @@ class TestOVNMechanismDriver(TestOVNMechanismDriverBase):
         # Invoke the method
         ovn_utils.sync_ha_chassis_group(
             self.context, 'fake-port-id', 'fake-net-id',
-            self.nb_ovn, self.sb_ovn, fake_txn)
+            self.nb_ovn, self.sb_ovn, None)
 
         # Assert the group was not re-created
         self.nb_ovn.ha_chassis_group_add.assert_not_called()
