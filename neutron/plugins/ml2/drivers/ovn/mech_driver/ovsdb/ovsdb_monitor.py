@@ -67,13 +67,18 @@ class BaseEvent(row_event.RowEvent):
 
 class ChassisEvent(row_event.RowEvent):
     """Chassis create update delete event."""
+    # NOTE: PEP 585 builtin generics (``tuple[str, ...]``) are not used in
+    # the annotations because stable/2024.1 still supports Python 3.8,
+    # where their evaluation at import time raises TypeError.
+    table = 'Chassis'
+    events = (row_event.RowEvent.ROW_CREATE,
+              row_event.RowEvent.ROW_UPDATE,
+              row_event.RowEvent.ROW_DELETE)
 
     def __init__(self, driver):
         self.driver = driver
         self.l3_plugin = directory.get_plugin(constants.L3)
-        table = 'Chassis'
-        events = (self.ROW_CREATE, self.ROW_UPDATE, self.ROW_DELETE)
-        super(ChassisEvent, self).__init__(events, table, None)
+        super().__init__(self.events, self.table, None)
         self.event_name = 'ChassisEvent'
 
     def _get_ha_chassis_groups_within_azs(self, az_hints):
