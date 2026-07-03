@@ -43,28 +43,6 @@ CONF = cfg.CONF
 LOG = log.getLogger(__name__)
 
 
-class BaseEvent(row_event.RowEvent):
-    table = None
-    events = tuple()
-
-    def __init__(self):
-        self.event_name = self.__class__.__name__
-        super(BaseEvent, self).__init__(self.events, self.table, None)
-
-    @abc.abstractmethod
-    def match_fn(self, event, row, old=None):
-        """Define match criteria other than table/event"""
-
-    def matches(self, event, row, old=None):
-        if row._table.name != self.table or event not in self.events:
-            return False
-        if not self.match_fn(event, row, old):
-            return False
-        LOG.debug("%s : Matched %s, %s, %s %s", self.event_name, self.table,
-                  event, self.conditions, self.old_conditions)
-        return True
-
-
 class ChassisEvent(row_event.RowEvent):
     """Chassis create update delete event."""
     # NOTE: PEP 585 builtin generics (``tuple[str, ...]``) are not used in
@@ -297,7 +275,7 @@ class PortBindingChassisUpdateEvent(row_event.RowEvent):
         self.driver.set_port_status_up(row.logical_port)
 
 
-class ChassisAgentEvent(BaseEvent):
+class ChassisAgentEvent(row_event.RowEvent):
     GLOBAL = True
     table = 'Chassis_Private'
 
@@ -306,22 +284,42 @@ class ChassisAgentEvent(BaseEvent):
     # don't want to insert/update/delete something a bajillion times.
     def __init__(self, driver):
         self.driver = driver
-        super().__init__()
+        super().__init__(self.events, self.table, None)
 
 
 class ChassisAgentDownEvent(ChassisAgentEvent):
-    events = (BaseEvent.ROW_DELETE,)
+    """Mark agents as down when their Chassis_Private is gone or orphaned.
+
+    Fires on ROW_DELETE (Chassis_Private removed) and on ROW_UPDATE when
+    the Chassis reference in Chassis_Private is cleared (Chassis was
+    deleted but Chassis_Private remained, e.g. ungraceful shutdown in
+    containerized deployments).
+    """
+    events = (row_event.RowEvent.ROW_DELETE, row_event.RowEvent.ROW_UPDATE)
 
     def run(self, event, row, old):
         for agent in n_agent.AgentCache().agents_by_chassis_private(row):
             agent.set_down = True
 
     def match_fn(self, event, row, old=None):
-        return True
+        if event == self.ROW_DELETE:
+            return True
+        # ROW_UPDATE: only match when chassis reference was cleared.
+        # NOTE: we cannot rely on ``old.chassis`` still containing the
+        # previous Chassis UUID, because when the Chassis row is deleted
+        # the weak reference in Chassis_Private.chassis is cleared at the
+        # same time the Chassis row is removed from the IDL cache. When
+        # ``old.chassis`` is resolved through ``Datum.to_python()``, any
+        # UUID that no longer points to an existing row is dropped from
+        # the returned list, so ``old.chassis`` ends up empty. Instead,
+        # detect the clearing by checking that the ``chassis`` column was
+        # part of the update (``hasattr(old, 'chassis')``) and that the
+        # new value is empty.
+        return hasattr(old, 'chassis') and not row.chassis
 
 
 class ChassisAgentDeleteEvent(ChassisAgentEvent):
-    events = (BaseEvent.ROW_UPDATE,)
+    events = (row_event.RowEvent.ROW_UPDATE,)
     table = 'SB_Global'
 
     def match_fn(self, event, row, old=None):
@@ -336,24 +334,33 @@ class ChassisAgentDeleteEvent(ChassisAgentEvent):
 
 
 class ChassisAgentWriteEvent(ChassisAgentEvent):
-    events = (BaseEvent.ROW_CREATE, BaseEvent.ROW_UPDATE)
+    events = (row_event.RowEvent.ROW_CREATE, row_event.RowEvent.ROW_UPDATE)
 
     def match_fn(self, event, row, old=None):
         # On updates to Chassis_Private because the Chassis has been deleted,
         # don't update the AgentCache. We use chassis_private.chassis to return
-        # data about the agent.
+        # data about the agent. The second condition matches either a normal
+        # nb_cfg update or a chassis reference being restored (e.g.
+        # ovn-controller reconnected after the Chassis was deleted while
+        # Chassis_Private remained).
         return (event == self.ROW_CREATE or
-                (hasattr(old, 'nb_cfg') and row.chassis))
+                (row.chassis and (hasattr(old, 'nb_cfg') or
+                 (hasattr(old, 'chassis') and not old.chassis))))
 
     def run(self, event, row, old):
+        # Clear down state on initial creation or when chassis reference is
+        # restored after being cleared (upstream bug #2148316).
+        chassis_restored = (hasattr(old, 'chassis') and
+                            not old.chassis and bool(row.chassis))
+        clear_down = bool(event == self.ROW_CREATE or chassis_restored)
         n_agent.AgentCache().update(ovn_const.OVN_CONTROLLER_AGENT, row,
-                                    clear_down=event == self.ROW_CREATE)
+                                    clear_down=clear_down)
 
 
 class ChassisAgentTypeChangeEvent(ChassisEvent):
     """Chassis Agent class change event"""
     GLOBAL = True
-    events = (BaseEvent.ROW_UPDATE,)
+    events = (row_event.RowEvent.ROW_UPDATE, )
 
     def match_fn(self, event, row, old=None):
         try:
@@ -382,7 +389,7 @@ class ChassisAgentTypeChangeEvent(ChassisEvent):
 
 
 class ChassisMetadataAgentWriteEvent(ChassisAgentEvent):
-    events = (BaseEvent.ROW_CREATE, BaseEvent.ROW_UPDATE)
+    events = (row_event.RowEvent.ROW_CREATE, row_event.RowEvent.ROW_UPDATE)
 
     @staticmethod
     def _metadata_nb_cfg(row):
