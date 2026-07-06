@@ -250,6 +250,7 @@ class TestOVNClient(TestOVNClientBase):
         port_binding = mock.Mock(host=host_id)
         db_port = mock.Mock(id=port_id, port_bindings=[port_binding])
         self.get_pb_bsah.return_value = port_binding
+        self.nb_idl.lookup.return_value = mock.Mock(up=[True])
 
         self.ovn_client.update_lsp_host_info(context, db_port)
 
@@ -266,6 +267,7 @@ class TestOVNClient(TestOVNClientBase):
         db_port_no_host = mock.Mock(
             id=port_id, port_bindings=[port_binding_no_host])
         self.get_pb_bsah.return_value = None
+        self.nb_idl.lookup.return_value = mock.Mock(up=[True])
 
         with mock.patch.object(
                 self.ovn_client,
@@ -287,6 +289,7 @@ class TestOVNClient(TestOVNClientBase):
         db_port_no_host = mock.Mock(
             id=port_id, port_bindings=[mock.Mock(host="")])
         self.get_pb_bsah.return_value = None
+        self.nb_idl.lookup.return_value = mock.Mock(up=[True])
 
         with mock.patch.object(
                 self.ovn_client,
@@ -320,6 +323,21 @@ class TestOVNClient(TestOVNClientBase):
         self.ovn_client.update_lsp_host_info(context, db_port)
         self.nb_idl.db_remove.assert_not_called()
         self.nb_idl.db_set.assert_not_called()
+
+    def test_update_lsp_host_info_router_port(self):
+        context = mock.MagicMock()
+        for device_owner in (const.DEVICE_OWNER_ROUTER_INTF,
+                             const.DEVICE_OWNER_DVR_INTERFACE,
+                             const.DEVICE_OWNER_ROUTER_HA_INTF,
+                             const.DEVICE_OWNER_HA_REPLICATED_INT,
+                             ):
+            self.nb_idl.reset_mock()
+            db_port = mock.Mock(id='fake-port-id',
+                                device_owner=device_owner)
+            self.ovn_client.update_lsp_host_info(context, db_port)
+            self.nb_idl.lookup.assert_not_called()
+            self.nb_idl.db_remove.assert_not_called()
+            self.nb_idl.db_set.assert_not_called()
 
     @mock.patch.object(ml2_db, 'get_port')
     def test__wait_for_active_port_bindings_host(self, mock_get_port):
