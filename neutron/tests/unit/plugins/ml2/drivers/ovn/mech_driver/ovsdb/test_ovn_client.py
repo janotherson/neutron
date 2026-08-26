@@ -32,6 +32,8 @@ from neutron_lib import constants as const
 from neutron_lib.services.logapi import constants as log_const
 from neutron_lib.services.trunk import constants as trunk_const
 
+from ovsdbapp.backend.ovs_idl import idlutils
+
 from tenacity import wait_none
 
 
@@ -406,6 +408,57 @@ class TestOVNClient(TestOVNClientBase):
             cidrs = self.ovn_client._get_snat_cidrs_for_external_router(
                 ctx, 'fake-id')
         self.assertEqual([constants.OVN_DEFAULT_SNAT_CIDR], cidrs)
+
+    def _prepare_update_lrouter_port(self):
+        port = {'id': 'lrp-port-id',
+                'device_owner': const.DEVICE_OWNER_ROUTER_INTF,
+                'revision_number': 1,
+                'network_id': 'fake-network-id',
+                'fixed_ips': [{'subnet_id': 'fake-subnet-id',
+                               'ip_address': '10.0.0.5'}]}
+        ctx = ncontext.Context()
+        self.ovn_client._get_nets_and_ipv6_ra_confs_for_router_port = (
+            mock.MagicMock(return_value=(['10.0.0.1'], {})))
+        return ctx, port
+
+    def test__update_lrouter_port_missing_lrp_if_exists(self):
+        # A missing LRP with if_exists=True must be skipped with a
+        # warning only, without any exception (and therefore without
+        # ovsdbapp's internal ERROR logging).
+        ctx, port = self._prepare_update_lrouter_port()
+        self.nb_idl.lookup.return_value = None
+        with mock.patch.object(ovn_client.LOG, 'warning') as mock_warning:
+            self.ovn_client._update_lrouter_port(ctx, port, if_exists=True)
+        lrp_name = 'lrp-' + port['id']
+        self.nb_idl.lookup.assert_called_once_with(
+            'Logical_Router_Port', lrp_name, None)
+        mock_warning.assert_called_once_with(
+            'Logical Router Port %s not found, skipping update', lrp_name)
+        self.nb_idl.update_lrouter_port.assert_not_called()
+        self.nb_idl.transaction.assert_not_called()
+
+    def test__update_lrouter_port_missing_lrp_no_if_exists(self):
+        # A missing LRP with if_exists=False must raise RowNotFound.
+        ctx, port = self._prepare_update_lrouter_port()
+        self.nb_idl.lookup.return_value = None
+        self.assertRaises(
+            idlutils.RowNotFound,
+            self.ovn_client._update_lrouter_port, ctx, port)
+        self.nb_idl.update_lrouter_port.assert_not_called()
+        self.nb_idl.transaction.assert_not_called()
+
+    def test__update_lrouter_port_existing_lrp(self):
+        ctx, port = self._prepare_update_lrouter_port()
+        lrp_row = mock.MagicMock()
+        lrp_row.external_ids = {
+            constants.OVN_ROUTER_NAME_EXT_ID_KEY: 'neutron-fake-router'}
+        self.nb_idl.lookup.return_value = lrp_row
+        with mock.patch.object(self.ovn_client, '_transaction') as txn:
+            self.ovn_client._update_lrouter_port(ctx, port, if_exists=False)
+        lrp_name = 'lrp-' + port['id']
+        self.nb_idl.lookup.assert_called_once_with(
+            'Logical_Router_Port', lrp_name, None)
+        txn.assert_called_once()
 
 
 class TestOVNClientFairMeter(TestOVNClientBase,

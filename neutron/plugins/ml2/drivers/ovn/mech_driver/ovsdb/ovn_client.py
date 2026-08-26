@@ -1884,9 +1884,21 @@ class OVNClient(object):
         update = {'networks': networks, 'ipv6_ra_configs': ipv6_ra_configs}
         is_gw_port = const.DEVICE_OWNER_ROUTER_GW == port.get(
             'device_owner')
-        external_ids = self._nb_idl.db_get(
-            'Logical_Router_Port', lrp_name,
-            'external_ids').execute(check_error=True)
+        # NOTE(dpetrov): Use a non-raising lookup instead of db_get() so
+        # that the missing-LRP race is handled without an exception.
+        # ovsdbapp's execute() logs every exception internally
+        # (LOG.exception) before re-raising, which would leave an
+        # unavoidable ERROR in the logs even when the caller handles the
+        # missing row gracefully.
+        lrp_row = self._nb_idl.lookup('Logical_Router_Port', lrp_name, None)
+        if lrp_row is None:
+            if if_exists:
+                LOG.warning('Logical Router Port %s not found, '
+                            'skipping update', lrp_name)
+                return
+            raise idlutils.RowNotFound(table='Logical_Router_Port',
+                                       col='name', match=lrp_name)
+        external_ids = lrp_row.external_ids
         router_id = external_ids[ovn_const.OVN_ROUTER_NAME_EXT_ID_KEY]
         commands = [
             self._nb_idl.update_lrouter_port(
