@@ -129,6 +129,15 @@ class TestOVNDriver(TestOVNDriverBase):
             }
             self.__dict__ = {**acl_defaults_dict, **acl_dict}
 
+    def test__acl_log_needs_update_without_label_column(self):
+        # OVN schema without the ACL.label column is considered supported
+        # on this branch; the ACL must be reported as needing update
+        # instead of raising AttributeError.
+        acl = self._fake_acl(name='log', meter=['meter'], severity=['info'])
+        del acl.label
+        self.assertTrue(self._log_driver._acl_log_needs_update(
+            acl, True, 'log', 'meter'))
+
     def _fake_pg_dict(self, **kwargs):
         uuid = uuidutils.generate_uuid()
         pg_defaults_dict = {

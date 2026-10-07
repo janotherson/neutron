@@ -123,7 +123,7 @@ class OVNDriver(base.DriverBase):
                 acl.name != [log_name] or
                 acl.meter != [meter_name] or
                 acl.severity != ['info'] or
-                acl.label == 0)
+                getattr(acl, 'label', 0) == 0)
 
     def _remove_acls_log(self, pgs, ovn_txn, log_name=None):
         acl_absents, acl_changes, acl_visits = 0, 0, 0
