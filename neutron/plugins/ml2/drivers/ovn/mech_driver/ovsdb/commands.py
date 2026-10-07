@@ -122,8 +122,10 @@ def _tag_column_to_tag_request(columns):
     if tag is not None and 'tag_request' not in columns:
         LOG.debug("Converting tag %s to a tag_request", tag)
         columns['tag_request'] = tag
-    # Defensively handle unchecked tag_request=None
-    if columns.get('tag_request') is None:
+    # Defensively handle unchecked tag_request=None, but only when the key
+    # was explicitly passed: a partial update without tag/tag_request must
+    # not reset tag_request (and thus, via northd, tag) on the port.
+    if 'tag_request' in columns and columns['tag_request'] is None:
         columns['tag_request'] = []
     return columns
 
