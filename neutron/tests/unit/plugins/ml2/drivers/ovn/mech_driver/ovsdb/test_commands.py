@@ -227,6 +227,42 @@ class TestSetLSwitchPortCommand(TestBaseCommand):
             cmd.run_idl(self.transaction)
             self.assertEqual(new_ext_ids, fake_lsp.external_ids)
 
+    def test_lswitch_port_update_without_tag_keeps_tag_request(self):
+        # A partial update without tag/tag_request must not reset
+        # tag_request: northd would then clear the subport's tag.
+        fake_lsp = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'tag_request': ['100']})
+        with mock.patch.object(idlutils, 'row_by_value',
+                               return_value=fake_lsp):
+            cmd = commands.SetLSwitchPortCommand(
+                self.ovn_api, fake_lsp.name, external_ids_update=None,
+                if_exists=True)
+            cmd.run_idl(self.transaction)
+            self.assertEqual(['100'], fake_lsp.tag_request)
+
+    def test_lswitch_port_update_tag_none_clears_tag_request(self):
+        # Explicitly passing tag_request=None still normalizes to [].
+        fake_lsp = fakes.FakeOvsdbRow.create_one_ovsdb_row(
+            attrs={'tag_request': ['100']})
+        with mock.patch.object(idlutils, 'row_by_value',
+                               return_value=fake_lsp):
+            cmd = commands.SetLSwitchPortCommand(
+                self.ovn_api, fake_lsp.name, external_ids_update=None,
+                if_exists=True, tag_request=None)
+            cmd.run_idl(self.transaction)
+            self.assertEqual([], fake_lsp.tag_request)
+
+    def test_lswitch_port_update_tag_without_tag_request(self):
+        # tag is still converted to tag_request when there is none.
+        fake_lsp = fakes.FakeOvsdbRow.create_one_ovsdb_row(attrs={})
+        with mock.patch.object(idlutils, 'row_by_value',
+                               return_value=fake_lsp):
+            cmd = commands.SetLSwitchPortCommand(
+                self.ovn_api, fake_lsp.name, external_ids_update=None,
+                if_exists=True, tag=['100'])
+            cmd.run_idl(self.transaction)
+            self.assertEqual(['100'], fake_lsp.tag_request)
+
     def _test_lswitch_port_update_del_dhcp(self, clear_v4_opts,
                                            clear_v6_opts, set_v4_opts=False,
                                            set_v6_opts=False):

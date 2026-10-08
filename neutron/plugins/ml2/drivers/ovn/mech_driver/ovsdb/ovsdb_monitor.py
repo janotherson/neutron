@@ -347,10 +347,10 @@ class ChassisAgentWriteEvent(ChassisAgentEvent):
 
     def run(self, event, row, old):
         # Clear down state on initial creation or when chassis reference is
-        # restored after being cleared.
+        # restored after being cleared (upstream bug #2148316).
         chassis_restored = (hasattr(old, 'chassis') and
-                            not old.chassis and row.chassis)
-        clear_down = event == self.ROW_CREATE or chassis_restored
+                            not old.chassis and bool(row.chassis))
+        clear_down = bool(event == self.ROW_CREATE or chassis_restored)
         n_agent.AgentCache().update(ovn_const.OVN_CONTROLLER_AGENT, row,
                                     clear_down=clear_down)
 
