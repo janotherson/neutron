@@ -15,6 +15,7 @@ from datetime import datetime
 import itertools
 
 from eventlet import greenthread
+from neutron_lib.api.definitions import portbindings
 from neutron_lib.api.definitions import segment as segment_def
 from neutron_lib import constants
 from neutron_lib import context
@@ -67,10 +68,12 @@ class OvnDbSynchronizer(metaclass=abc.ABCMeta):
 class OvnNbSynchronizer(OvnDbSynchronizer):
     """Synchronizer class for NB."""
 
-    def __init__(self, core_plugin, ovn_api, sb_ovn, mode, ovn_driver):
+    def __init__(self, core_plugin, ovn_api, sb_ovn, mode, ovn_driver,
+                 is_maintenance=False):
         super().__init__(
             core_plugin, ovn_api, ovn_driver)
         self.mode = mode
+        self.is_maintenance = is_maintenance
         self.l3_plugin = directory.get_plugin(plugin_constants.L3)
         self.pf_plugin = directory.get_plugin(plugin_constants.PORTFORWARDING)
         if not self.pf_plugin:
@@ -119,6 +122,7 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
         self.sync_routers_and_rports(ctx)
         self.sync_port_qos_policies(ctx)
         self.sync_fip_qos_policies(ctx)
+        self.sync_fip_distributed_nat(ctx)
 
         LOG.debug("OVN-Northbound DB sync process completed @ %s",
                   str(datetime.now()))
@@ -1413,6 +1417,59 @@ class OvnNbSynchronizer(OvnDbSynchronizer):
 
         LOG.debug('OVN-NB Sync Floating IP QoS policies completed @ %s',
                   str(datetime.now()))
+
+    def sync_fip_distributed_nat(self, ctx):
+        """Sync external_mac for distributed floating IP NAT rules"""
+        LOG.debug('OVN-NB Sync distributed Floating IP NAT rules started '
+                  '@ %s', str(datetime.now()))
+
+        if not ovn_conf.is_ovn_distributed_floating_ip():
+            LOG.debug('Distributed floating IP is not enabled, skipping')
+            return
+
+        nat_rules_to_set = []
+        for nat_rule in self.ovn_api.get_floatingips():
+            ext_ids = nat_rule.get('external_ids', {})
+            if ovn_const.OVN_FIP_EXT_ID_KEY not in ext_ids:
+                continue
+            expected_mac = ext_ids.get(ovn_const.OVN_FIP_EXT_MAC_KEY)
+            if not expected_mac:
+                continue
+            # When logical_port is absent, the FIP was intentionally
+            # centralized (LB member with VIP FIP), skip it.
+            logical_port = nat_rule.get('logical_port')
+            if isinstance(logical_port, list):
+                logical_port = logical_port[0] if logical_port else None
+            if not logical_port:
+                continue
+            ovn_mac = nat_rule.get('external_mac')
+            if isinstance(ovn_mac, list):
+                ovn_mac = ovn_mac[0] if ovn_mac else None
+            if ovn_mac != expected_mac:
+                port_id = ext_ids.get(ovn_const.OVN_FIP_PORT_EXT_ID_KEY)
+                try:
+                    port = self.core_plugin.get_port(ctx, port_id)
+                except n_exc.PortNotFound:
+                    continue
+                if not port.get(portbindings.HOST_ID):
+                    continue
+                nat_rules_to_set.append((nat_rule, expected_mac))
+
+        if not nat_rules_to_set:
+            pass
+        elif not (self.mode == ovn_const.OVN_DB_SYNC_MODE_REPAIR or
+                  self.is_maintenance):
+            LOG.warning('The floating IP NAT rules must be updated to set '
+                        '``external_mac`` for distributed floating IPs.')
+        else:
+            with self.ovn_api.transaction(check_error=True) as txn:
+                for nat_rule, expected_mac in nat_rules_to_set:
+                    txn.add(self.ovn_api.db_set(
+                        'NAT', nat_rule['_uuid'],
+                        ('external_mac', expected_mac)))
+
+        LOG.debug('OVN-NB Sync distributed Floating IP NAT rules '
+                  'completed @ %s', str(datetime.now()))
 
 
 class OvnSbSynchronizer(OvnDbSynchronizer):

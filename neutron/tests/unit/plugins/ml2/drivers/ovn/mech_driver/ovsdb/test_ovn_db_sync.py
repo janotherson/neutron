@@ -16,6 +16,8 @@ import collections
 from unittest import mock
 
 from neutron_lib import constants as const
+from neutron_lib.api.definitions import portbindings
+from neutron_lib import exceptions as n_exc
 from neutron_lib.services.logapi import constants as log_const
 from oslo_utils import uuidutils
 
@@ -1411,3 +1413,174 @@ class TestOvnSbSyncML2(test_mech_driver.OVNMechanismDriverTestCase):
                 hosts_in_neutron - set(hostname_with_physnets.keys())]
             ovn_driver.update_segment_host_mapping.assert_has_calls(
                 update_segment_host_mapping_calls, any_order=True)
+
+
+class TestSyncFipDistributedNat(test_mech_driver.OVNMechanismDriverTestCase):
+    def setUp(self):
+        super().setUp()
+        self.synchronizer = ovn_db_sync.OvnNbSynchronizer(
+            self.plugin, self.mech_driver.nb_ovn, self.mech_driver.sb_ovn,
+            'repair', self.mech_driver)
+        self.nb_api = self.synchronizer.ovn_api
+        self.ctx = mock.Mock()
+
+    def _make_nat_rule(self, fip_id=None, ext_mac_in_ext_ids=None,
+                       external_mac=None, logical_port=None, port_id=None):
+        external_ids = {}
+        if fip_id is not None:
+            external_ids[ovn_const.OVN_FIP_EXT_ID_KEY] = fip_id
+        if ext_mac_in_ext_ids is not None:
+            external_ids[ovn_const.OVN_FIP_EXT_MAC_KEY] = ext_mac_in_ext_ids
+        if port_id is not None:
+            external_ids[ovn_const.OVN_FIP_PORT_EXT_ID_KEY] = port_id
+        nat = {'_uuid': uuidutils.generate_uuid(),
+               'external_ids': external_ids}
+        if external_mac is not None:
+            nat['external_mac'] = external_mac
+        if logical_port is not None:
+            nat['logical_port'] = logical_port
+        return nat
+
+    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb'
+                '.ovn_db_sync.ovn_conf.is_ovn_distributed_floating_ip',
+                return_value=False)
+    def test_skipped_when_distributed_fip_disabled(self, mock_dvr):
+        self.synchronizer.sync_fip_distributed_nat(self.ctx)
+        self.nb_api.get_floatingips.assert_not_called()
+
+    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb'
+                '.ovn_db_sync.ovn_conf.is_ovn_distributed_floating_ip',
+                return_value=True)
+    def test_external_mac_set_when_missing(self, mock_dvr):
+        mac = 'fa:16:3e:aa:bb:cc'
+        nat = self._make_nat_rule(fip_id='fip-1', ext_mac_in_ext_ids=mac,
+                                  logical_port='port-1', port_id='port-1')
+        self.nb_api.get_floatingips.return_value = [nat]
+
+        with mock.patch.object(self.synchronizer.core_plugin, 'get_port',
+                               return_value={portbindings.HOST_ID: 'host-1'}):
+            self.synchronizer.sync_fip_distributed_nat(self.ctx)
+
+        self.nb_api.db_set.assert_called_once_with(
+            'NAT', nat['_uuid'], ('external_mac', mac))
+
+    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb'
+                '.ovn_db_sync.ovn_conf.is_ovn_distributed_floating_ip',
+                return_value=True)
+    def test_external_mac_set_in_log_mode_when_maintenance(self, mock_dvr):
+        # The maintenance worker creates the synchronizer with
+        # is_maintenance=True: the external_mac fix is applied even in
+        # sync mode "log" (matching master, where the maintenance worker
+        # passes is_maintenance=True)
+        synchronizer = ovn_db_sync.OvnNbSynchronizer(
+            self.plugin, self.mech_driver.nb_ovn, self.mech_driver.sb_ovn,
+            'log', self.mech_driver, is_maintenance=True)
+        mac = 'fa:16:3e:aa:bb:cc'
+        nat = self._make_nat_rule(fip_id='fip-1', ext_mac_in_ext_ids=mac,
+                                  logical_port='port-1', port_id='port-1')
+        self.nb_api.get_floatingips.return_value = [nat]
+
+        with mock.patch.object(synchronizer.core_plugin, 'get_port',
+                               return_value={portbindings.HOST_ID: 'host-1'}):
+            synchronizer.sync_fip_distributed_nat(self.ctx)
+
+        self.nb_api.db_set.assert_called_once_with(
+            'NAT', nat['_uuid'], ('external_mac', mac))
+
+    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb'
+                '.ovn_db_sync.ovn_conf.is_ovn_distributed_floating_ip',
+                return_value=True)
+    def test_log_mode_without_maintenance_only_warns(self, mock_dvr):
+        # In sync mode "log" outside of maintenance the fix is not
+        # applied, only a warning is logged
+        synchronizer = ovn_db_sync.OvnNbSynchronizer(
+            self.plugin, self.mech_driver.nb_ovn, self.mech_driver.sb_ovn,
+            'log', self.mech_driver)
+        mac = 'fa:16:3e:aa:bb:cc'
+        nat = self._make_nat_rule(fip_id='fip-1', ext_mac_in_ext_ids=mac,
+                                  logical_port='port-1', port_id='port-1')
+        self.nb_api.get_floatingips.return_value = [nat]
+
+        with mock.patch.object(synchronizer.core_plugin, 'get_port',
+                               return_value={portbindings.HOST_ID: 'host-1'}):
+            synchronizer.sync_fip_distributed_nat(self.ctx)
+
+        self.nb_api.db_set.assert_not_called()
+
+    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb'
+                '.ovn_db_sync.ovn_conf.is_ovn_distributed_floating_ip',
+                return_value=True)
+    def test_external_mac_not_updated_when_correct(self, mock_dvr):
+        mac = 'fa:16:3e:aa:bb:cc'
+        nat = self._make_nat_rule(fip_id='fip-1', ext_mac_in_ext_ids=mac,
+                                  external_mac=mac, logical_port='port-1')
+        self.nb_api.get_floatingips.return_value = [nat]
+
+        self.synchronizer.sync_fip_distributed_nat(self.ctx)
+
+        self.nb_api.db_set.assert_not_called()
+
+    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb'
+                '.ovn_db_sync.ovn_conf.is_ovn_distributed_floating_ip',
+                return_value=True)
+    def test_non_neutron_nat_rules_skipped(self, mock_dvr):
+        mac = 'fa:16:3e:aa:bb:cc'
+        non_neutron_nat = self._make_nat_rule(ext_mac_in_ext_ids=mac,
+                                              logical_port='port-1')
+        self.nb_api.get_floatingips.return_value = [non_neutron_nat]
+
+        self.synchronizer.sync_fip_distributed_nat(self.ctx)
+
+        self.nb_api.db_set.assert_not_called()
+
+    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb'
+                '.ovn_db_sync.ovn_conf.is_ovn_distributed_floating_ip',
+                return_value=True)
+    def test_nat_without_ext_mac_in_ext_ids_skipped(self, mock_dvr):
+        nat = self._make_nat_rule(fip_id='fip-1', logical_port='port-1')
+        self.nb_api.get_floatingips.return_value = [nat]
+
+        self.synchronizer.sync_fip_distributed_nat(self.ctx)
+
+        self.nb_api.db_set.assert_not_called()
+
+    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb'
+                '.ovn_db_sync.ovn_conf.is_ovn_distributed_floating_ip',
+                return_value=True)
+    def test_lb_member_fip_without_logical_port_skipped(self, mock_dvr):
+        mac = 'fa:16:3e:aa:bb:cc'
+        nat = self._make_nat_rule(fip_id='fip-1', ext_mac_in_ext_ids=mac)
+        self.nb_api.get_floatingips.return_value = [nat]
+
+        self.synchronizer.sync_fip_distributed_nat(self.ctx)
+
+        self.nb_api.db_set.assert_not_called()
+
+    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb'
+                '.ovn_db_sync.ovn_conf.is_ovn_distributed_floating_ip',
+                return_value=True)
+    def test_unbound_port_skipped(self, mock_dvr):
+        mac = 'fa:16:3e:aa:bb:cc'
+        nat = self._make_nat_rule(fip_id='fip-1', ext_mac_in_ext_ids=mac,
+                                  logical_port='port-1', port_id='port-1')
+        self.nb_api.get_floatingips.return_value = [nat]
+        with mock.patch.object(self.synchronizer.core_plugin, 'get_port',
+                               return_value={portbindings.HOST_ID: ''}):
+            self.synchronizer.sync_fip_distributed_nat(self.ctx)
+
+        self.nb_api.db_set.assert_not_called()
+
+    @mock.patch('neutron.plugins.ml2.drivers.ovn.mech_driver.ovsdb'
+                '.ovn_db_sync.ovn_conf.is_ovn_distributed_floating_ip',
+                return_value=True)
+    def test_deleted_port_skipped(self, mock_dvr):
+        mac = 'fa:16:3e:aa:bb:cc'
+        nat = self._make_nat_rule(fip_id='fip-1', ext_mac_in_ext_ids=mac,
+                                  logical_port='port-1', port_id='port-1')
+        self.nb_api.get_floatingips.return_value = [nat]
+        with mock.patch.object(self.synchronizer.core_plugin, 'get_port',
+                               side_effect=n_exc.PortNotFound(
+                                   port_id='port-1')):
+            self.synchronizer.sync_fip_distributed_nat(self.ctx)
+
+        self.nb_api.db_set.assert_not_called()
