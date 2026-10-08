@@ -98,8 +98,8 @@ OVN_SB_SCHEMA = {
 }
 
 
-ROW_CREATE = ovsdb_monitor.BaseEvent.ROW_CREATE
-ROW_UPDATE = ovsdb_monitor.BaseEvent.ROW_UPDATE
+ROW_CREATE = ovsdb_monitor.row_event.RowEvent.ROW_CREATE
+ROW_UPDATE = ovsdb_monitor.row_event.RowEvent.ROW_UPDATE
 
 
 class TestOvnDbNotifyHandler(base.BaseTestCase):
@@ -761,3 +761,103 @@ class TestChassisEvent(base.BaseTestCase):
         # after it became a Gateway chassis
         self._test_handle_ha_chassis_group_changes_create(
             self.event.ROW_UPDATE)
+
+
+class TestChassisAgentWriteEvent(base.BaseTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.driver = mock.MagicMock()
+        self.event = ovsdb_monitor.ChassisAgentWriteEvent(self.driver)
+        self.ovsdb_row = fakes.FakeOvsdbRow.create_one_ovsdb_row
+
+    def test_match_fn_create(self):
+        row = self.ovsdb_row(attrs={'chassis': ['chassis-1']})
+        self.assertTrue(self.event.match_fn(self.event.ROW_CREATE, row))
+
+    def test_match_fn_update_nb_cfg(self):
+        # A normal heartbeat (nb_cfg) update with a valid chassis reference
+        row = self.ovsdb_row(attrs={'chassis': ['chassis-1'], 'nb_cfg': 2})
+        old = self.ovsdb_row(attrs={'chassis': ['chassis-1'], 'nb_cfg': 1})
+        self.assertTrue(self.event.match_fn(self.event.ROW_UPDATE, row, old))
+
+    def test_match_fn_update_chassis_cleared(self):
+        # Chassis deleted, Chassis_Private remains: no chassis reference,
+        # the agent must not be updated (ChassisAgentDownEvent handles it)
+        row = self.ovsdb_row(attrs={'chassis': [], 'nb_cfg': 2})
+        old = self.ovsdb_row(attrs={'chassis': ['chassis-1'], 'nb_cfg': 1})
+        self.assertFalse(self.event.match_fn(self.event.ROW_UPDATE, row, old))
+
+    def test_match_fn_update_chassis_restored(self):
+        # ovn-controller reconnected after the Chassis was deleted while
+        # Chassis_Private remained (upstream bug #2148316)
+        row = self.ovsdb_row(attrs={'chassis': ['chassis-1']})
+        old = self.ovsdb_row(attrs={'chassis': []})
+        self.assertTrue(self.event.match_fn(self.event.ROW_UPDATE, row, old))
+
+    def test_run_clear_down_on_create(self):
+        row = self.ovsdb_row(attrs={'chassis': ['chassis-1']})
+        with mock.patch('neutron.plugins.ml2.drivers.ovn.agent.neutron_agent.'
+                        'AgentCache') as agent_cache:
+            self.event.run(self.event.ROW_CREATE, row, None)
+            agent_cache.assert_has_calls([
+                mock.call().update(
+                    ovn_const.OVN_CONTROLLER_AGENT, row, clear_down=True)])
+
+    def test_run_no_clear_down_on_update(self):
+        row = self.ovsdb_row(attrs={'chassis': ['chassis-1'], 'nb_cfg': 2})
+        old = self.ovsdb_row(attrs={'chassis': ['chassis-1'], 'nb_cfg': 1})
+        with mock.patch('neutron.plugins.ml2.drivers.ovn.agent.neutron_agent.'
+                        'AgentCache') as agent_cache:
+            self.event.run(self.event.ROW_UPDATE, row, old)
+            agent_cache.assert_has_calls([
+                mock.call().update(
+                    ovn_const.OVN_CONTROLLER_AGENT, row, clear_down=False)])
+
+    def test_run_clear_down_on_chassis_restored(self):
+        row = self.ovsdb_row(attrs={'chassis': ['chassis-1']})
+        old = self.ovsdb_row(attrs={'chassis': []})
+        with mock.patch('neutron.plugins.ml2.drivers.ovn.agent.neutron_agent.'
+                        'AgentCache') as agent_cache:
+            self.event.run(self.event.ROW_UPDATE, row, old)
+            agent_cache.assert_has_calls([
+                mock.call().update(
+                    ovn_const.OVN_CONTROLLER_AGENT, row, clear_down=True)])
+
+
+class TestChassisAgentDownEvent(base.BaseTestCase):
+
+    def setUp(self):
+        super().setUp()
+        self.driver = mock.MagicMock()
+        self.event = ovsdb_monitor.ChassisAgentDownEvent(self.driver)
+        self.ovsdb_row = fakes.FakeOvsdbRow.create_one_ovsdb_row
+
+    def test_match_fn_row_delete(self):
+        row = self.ovsdb_row(attrs={'chassis': ['chassis-1']})
+        self.assertTrue(self.event.match_fn(self.event.ROW_DELETE, row))
+
+    def test_match_fn_update_chassis_cleared(self):
+        # The chassis column was part of the update; any UUID pointing to
+        # the deleted Chassis row is dropped, so old.chassis resolves empty
+        row = self.ovsdb_row(attrs={'chassis': [], 'nb_cfg': 2})
+        old = self.ovsdb_row(attrs={'chassis': [], 'nb_cfg': 1})
+        self.assertTrue(self.event.match_fn(self.event.ROW_UPDATE, row, old))
+
+    def test_match_fn_update_chassis_column_untouched(self):
+        # The chassis column was not part of the update: not a clearing
+        row = self.ovsdb_row(attrs={'nb_cfg': 2})
+        old = self.ovsdb_row(attrs={'nb_cfg': 1})
+        self.assertFalse(self.event.match_fn(self.event.ROW_UPDATE, row, old))
+
+    def test_match_fn_update_chassis_restored(self):
+        # The chassis reference is back: do not mark the agent down again
+        row = self.ovsdb_row(attrs={'chassis': ['chassis-1']})
+        old = self.ovsdb_row(attrs={'chassis': []})
+        self.assertFalse(self.event.match_fn(self.event.ROW_UPDATE, row, old))
+
+    def test_match_fn_update_normal_heartbeat(self):
+        # Regular nb_cfg update, chassis reference unchanged
+        row = self.ovsdb_row(attrs={'chassis': ['chassis-1'], 'nb_cfg': 2})
+        old = self.ovsdb_row(attrs={'chassis': ['chassis-1'], 'nb_cfg': 1})
+        self.assertFalse(self.event.match_fn(self.event.ROW_UPDATE, row, old))
